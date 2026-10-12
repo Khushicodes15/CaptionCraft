@@ -1,6 +1,4 @@
 import { createServerFn } from "@tanstack/react-start";
-import { bundle } from "@remotion/bundler";
-import { renderMedia, selectComposition, getVideoMetadata } from "@remotion/renderer";
 import path from "path";
 import fs from "fs";
 import { tmpdir } from "os";
@@ -99,8 +97,12 @@ export const renderMp4 = createServerFn({ method: "POST" })
 
       // Inspect source video for exact duration, frame rate, and dimensions
       let videoMeta: any = null;
+      const remotionRendererModule = "@remotion/renderer";
+      const remotionBundlerModule = "@remotion/bundler";
+
       try {
         console.log("[renderMp4] Extracting video metadata...");
+        const { getVideoMetadata }: any = await import(/* @vite-ignore */ remotionRendererModule);
         videoMeta = await getVideoMetadata(localVideoPath);
         console.log("[renderMp4] Extracted video metadata:", {
           durationInSeconds: videoMeta?.durationInSeconds,
@@ -142,6 +144,7 @@ export const renderMp4 = createServerFn({ method: "POST" })
       console.log(`[renderMp4] Resolved export duration: ${durationSec ?? (durationInFrames / videoFps)}s (${durationInFrames} frames @ ${videoFps}fps), resolution: ${videoWidth}x${videoHeight}`);
 
       console.log("[renderMp4] Bundling Remotion project...");
+      const { bundle }: any = await import(/* @vite-ignore */ remotionBundlerModule);
       const bundleLocation = await bundle({
         entryPoint: path.resolve(process.cwd(), "src/remotion/index.ts"),
       });
@@ -163,6 +166,7 @@ export const renderMp4 = createServerFn({ method: "POST" })
       };
 
       console.log("[renderMp4] Selecting composition...");
+      const { renderMedia, selectComposition }: any = await import(/* @vite-ignore */ remotionRendererModule);
       const composition = await selectComposition({
         serveUrl: bundleLocation,
         id: "CaptionedVideo",

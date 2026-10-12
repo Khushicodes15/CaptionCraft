@@ -14,5 +14,13 @@ export default defineConfig({
   },
   nitro: {
     preset: process.env["VERCEL"] ? "vercel" : (process.env["NITRO_PRESET"] || "node-server"),
+    traceDeps: [
+      "!lightningcss",
+      "!@rspack/core",
+      "!esbuild",
+      "!rolldown",
+      "!vite",
+      "!@swc/core",
+    ],
   },
 });
