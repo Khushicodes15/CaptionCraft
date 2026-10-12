@@ -423,8 +423,12 @@ function Editor() {
         initialCaptions = segments;
         setCaptions(segments);
       } else {
-        initialCaptions = loaded;
-        setCaptions(loaded);
+        const normalized = loaded.map((c, idx) => ({
+          ...c,
+          id: c.id || `cap-${idx}-${Math.random().toString(36).slice(2, 7)}`,
+        }));
+        initialCaptions = normalized;
+        setCaptions(normalized);
       }
     }
     const finalEmphasis = parsedEmphasis.success ? parsedEmphasis.data : {};
@@ -1235,6 +1239,15 @@ function Editor() {
           {captions.length > 0 ? "Retranscribe" : "Transcribe"}
         </Button>
       </div>
+
+      {captions.length > 0 && (
+        <div className="flex items-center justify-between px-3 py-1.5 bg-muted/20 border-b border-border/50 text-[11px] text-muted-foreground flex-shrink-0">
+          <span>{captions.length} captions</span>
+          <span className="text-[10px] text-muted-foreground/80">
+            Timing delay? Use <strong className="text-foreground">Audio Sync</strong> on timeline
+          </span>
+        </div>
+      )}
 
       {/* Caption lines list */}
       <div ref={transcriptListRef} className="flex-1 overflow-y-auto space-y-1.5 custom-scrollbar">

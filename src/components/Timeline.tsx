@@ -10,7 +10,11 @@ import {
   ZoomOut,
   Undo2,
   Redo2,
+  Clock,
+  SlidersHorizontal,
+  GripVertical,
 } from "lucide-react";
+import { toast } from "sonner";
 
 export type TimelineProps = {
   captions: Caption[];
@@ -66,6 +70,23 @@ export const Timeline: React.FC<TimelineProps> = ({
   const [zoom, setZoom] = useState(1);
   const scrollRef = useRef<HTMLDivElement>(null);
   const isScrubbingPlayhead = useRef(false);
+
+  // Audio / Subtitle Sync Popover State
+  const [showSyncMenu, setShowSyncMenu] = useState(false);
+  const [syncOffsetMs, setSyncOffsetMs] = useState(0);
+  const syncMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close sync menu when clicking outside
+  useEffect(() => {
+    if (!showSyncMenu) return;
+    const onOutsideClick = (e: MouseEvent) => {
+      if (syncMenuRef.current && !syncMenuRef.current.contains(e.target as Node)) {
+        setShowSyncMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", onOutsideClick);
+    return () => document.removeEventListener("mousedown", onOutsideClick);
+  }, [showSyncMenu]);
 
   // Synchronize playback & playhead with video element reliably
   useEffect(() => {
@@ -217,15 +238,81 @@ export const Timeline: React.FC<TimelineProps> = ({
     }
   };
 
-  // Snapshot-based Dragging & Trimming with ripple policy
+  // Global Timing Sync (shifts ALL subtitles by deltaMs with word synchronization)
+  const handleGlobalShift = (shiftMs: number) => {
+    if (captions.length === 0) return;
+    const updated = captions.map((c) => {
+      const newStart = Math.max(0, Math.round(c.startMs + shiftMs));
+      const dur = Math.max(150, c.endMs - c.startMs);
+      const newEnd = Math.max(newStart + 150, Math.round(c.endMs + shiftMs));
+      const actualShift = newStart - c.startMs;
+      return {
+        ...c,
+        startMs: newStart,
+        endMs: newEnd,
+        words: c.words?.map((w) => ({
+          ...w,
+          startMs: Math.max(0, Math.round(w.startMs + actualShift)),
+          endMs: Math.max(0, Math.round(w.endMs + actualShift)),
+        })),
+      };
+    });
+    setCaptions(updated);
+    setSyncOffsetMs((prev) => prev + shiftMs);
+    onHistoryCommit?.(updated);
+    const secStr = shiftMs > 0 ? `+${(shiftMs / 1000).toFixed(1)}s` : `${(shiftMs / 1000).toFixed(1)}s`;
+    toast.success(`Shifted all subtitles by ${secStr} (Ctrl+Z to undo)`);
+  };
+
+  // Micro-nudge for single selected subtitle
+  const handleNudgeSelected = (nudgeMs: number) => {
+    if (!selectedCaptionId || captions.length === 0) return;
+    const idx = captions.findIndex((c) => c.id === selectedCaptionId);
+    if (idx === -1) return;
+    const target = captions[idx];
+    const newStart = Math.max(0, Math.round(target.startMs + nudgeMs));
+    const newEnd = Math.max(newStart + 150, Math.round(target.endMs + nudgeMs));
+    const actualShift = newStart - target.startMs;
+    const updated = captions.map((c, i) =>
+      i === idx
+        ? {
+            ...c,
+            startMs: newStart,
+            endMs: newEnd,
+            words: c.words?.map((w) => ({
+              ...w,
+              startMs: Math.max(0, Math.round(w.startMs + actualShift)),
+              endMs: Math.max(0, Math.round(w.endMs + actualShift)),
+            })),
+          }
+        : c
+    );
+    setCaptions(updated);
+    onHistoryCommit?.(updated);
+  };
+
+  // Snapshot-based Dragging & Trimming with fluid ripple & shove behavior
   const initialCaptionsRef = useRef<Caption[]>([]);
   const [draggingSeg, setDraggingSeg] = useState<{
     id: string;
+    targetIdx: number;
     type: "move" | "left" | "right";
     startX: number;
     startVal: number;
     origDuration: number;
   } | null>(null);
+
+  // Global cursor management during drag
+  useEffect(() => {
+    if (draggingSeg) {
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = draggingSeg.type === "move" ? "grabbing" : "col-resize";
+      return () => {
+        document.body.style.userSelect = "";
+        document.body.style.cursor = "";
+      };
+    }
+  }, [draggingSeg]);
 
   useEffect(() => {
     const handleMove = (e: MouseEvent) => {
@@ -234,74 +321,166 @@ export const Timeline: React.FC<TimelineProps> = ({
       const dMs = dx / pxPerMs;
 
       const origCaptions = initialCaptionsRef.current;
-      const targetIdx = origCaptions.findIndex((c) => c.id === draggingSeg.id);
-      if (targetIdx === -1) return;
+      let targetIdx = draggingSeg.targetIdx;
+      if (targetIdx < 0 || targetIdx >= origCaptions.length || origCaptions[targetIdx]?.id !== draggingSeg.id) {
+        targetIdx = origCaptions.findIndex((c) => c.id === draggingSeg.id);
+      }
+      if (targetIdx === -1 || !origCaptions[targetIdx]) return;
       const origTarget = origCaptions[targetIdx];
-      if (!origTarget) return;
 
-      if (draggingSeg.type === "right") {
-        // Extending or shortening right edge:
-        // Ripple behavior: extending pushes subsequent segments forward,
-        // shortening pulls subsequent segments backward, preserving their durations and order.
+      if (draggingSeg.type === "move") {
+        // Fluid timeline segment moving:
+        // Segments push neighbors forward or backward naturally without getting clamped at delta 0.
+        const delta = Math.round(dMs);
+        const dur = Math.max(150, draggingSeg.origDuration);
+
+        if (delta >= 0) {
+          // Moving forward (Right)
+          const newStart = origTarget.startMs + delta;
+          const newEnd = newStart + dur;
+          const actualShift = newStart - origTarget.startMs;
+
+          const updated: Caption[] = origCaptions.map((c) => ({ ...c }));
+          updated[targetIdx] = {
+            ...origTarget,
+            startMs: newStart,
+            endMs: newEnd,
+            words: origTarget.words?.map((w) => ({
+              ...w,
+              startMs: Math.max(0, Math.round(w.startMs + actualShift)),
+              endMs: Math.max(0, Math.round(w.endMs + actualShift)),
+            })),
+          };
+
+          // Push subsequent segments forward if overlapped
+          let prevEnd = newEnd;
+          for (let i = targetIdx + 1; i < updated.length; i++) {
+            const cur = updated[i];
+            if (cur.startMs < prevEnd) {
+              const pushDelta = prevEnd - cur.startMs;
+              const pushedStart = prevEnd;
+              const pushedEnd = cur.endMs + pushDelta;
+              updated[i] = {
+                ...cur,
+                startMs: pushedStart,
+                endMs: pushedEnd,
+                words: cur.words?.map((w) => ({
+                  ...w,
+                  startMs: Math.max(0, Math.round(w.startMs + pushDelta)),
+                  endMs: Math.max(0, Math.round(w.endMs + pushDelta)),
+                })),
+              };
+              prevEnd = pushedEnd;
+            } else {
+              prevEnd = cur.endMs;
+            }
+          }
+
+          setCaptions(updated);
+        } else {
+          // Moving backward (Left)
+          const minAllowedStart = targetIdx * 100;
+          const newStart = Math.max(minAllowedStart, origTarget.startMs + delta);
+          const newEnd = newStart + dur;
+          const actualShift = newStart - origTarget.startMs;
+
+          const updated: Caption[] = origCaptions.map((c) => ({ ...c }));
+          updated[targetIdx] = {
+            ...origTarget,
+            startMs: newStart,
+            endMs: newEnd,
+            words: origTarget.words?.map((w) => ({
+              ...w,
+              startMs: Math.max(0, Math.round(w.startMs + actualShift)),
+              endMs: Math.max(0, Math.round(w.endMs + actualShift)),
+            })),
+          };
+
+          // Nudge preceding segments backward towards 0 if overlapped
+          let nextStart = newStart;
+          for (let i = targetIdx - 1; i >= 0; i--) {
+            const cur = updated[i];
+            if (cur.endMs > nextStart) {
+              const segDur = Math.max(100, cur.endMs - cur.startMs);
+              const pushedEnd = nextStart;
+              const pushedStart = Math.max(i * 100, pushedEnd - segDur);
+              const pushDelta = pushedStart - cur.startMs;
+              updated[i] = {
+                ...cur,
+                startMs: pushedStart,
+                endMs: pushedEnd,
+                words: cur.words?.map((w) => ({
+                  ...w,
+                  startMs: Math.max(0, Math.round(w.startMs + pushDelta)),
+                  endMs: Math.max(0, Math.round(w.endMs + pushDelta)),
+                })),
+              };
+              nextStart = pushedStart;
+            } else {
+              nextStart = cur.startMs;
+            }
+          }
+
+          setCaptions(updated);
+        }
+      } else if (draggingSeg.type === "left") {
+        // Trimming left edge (startMs):
+        const minDuration = 150;
+        const maxStart = origTarget.endMs - minDuration;
+        const prevMinEnd = targetIdx > 0 ? (origCaptions[targetIdx - 1].startMs + 100) : 0;
+        const newStart = Math.max(prevMinEnd, Math.min(maxStart, Math.round(origTarget.startMs + dMs)));
+
+        const updated: Caption[] = origCaptions.map((c) => ({ ...c }));
+        updated[targetIdx] = {
+          ...origTarget,
+          startMs: newStart,
+        };
+
+        // Smoothly adjust preceding segment end if overlapping
+        if (targetIdx > 0 && updated[targetIdx - 1].endMs > newStart) {
+          updated[targetIdx - 1] = {
+            ...updated[targetIdx - 1],
+            endMs: newStart,
+          };
+        }
+
+        setCaptions(updated);
+      } else if (draggingSeg.type === "right") {
+        // Trimming right edge (endMs):
         const minDuration = 150;
         const newTargetEnd = Math.max(origTarget.startMs + minDuration, Math.round(origTarget.endMs + dMs));
         const delta = newTargetEnd - origTarget.endMs;
 
-        const updated: Caption[] = [...origCaptions];
+        const updated: Caption[] = origCaptions.map((c) => ({ ...c }));
         updated[targetIdx] = {
           ...origTarget,
-          startMs: origTarget.startMs,
           endMs: newTargetEnd,
         };
 
-        // Ripple forward/backward for all subsequent segments
+        // Ripple push subsequent segments forward if needed
         let prevEnd = newTargetEnd;
-        for (let i = targetIdx + 1; i < origCaptions.length; i++) {
-          const seg = origCaptions[i];
+        for (let i = targetIdx + 1; i < updated.length; i++) {
+          const seg = updated[i];
           if (!seg) continue;
           const segDuration = Math.max(minDuration, seg.endMs - seg.startMs);
           const proposedStart = seg.startMs + delta;
-          // Never overlap previous segment's end
           const newStart = Math.max(prevEnd, Math.round(proposedStart));
           const newEnd = newStart + segDuration;
+          const shift = newStart - seg.startMs;
           updated[i] = {
             ...seg,
             startMs: newStart,
             endMs: newEnd,
+            words: seg.words?.map((w) => ({
+              ...w,
+              startMs: Math.max(0, Math.round(w.startMs + shift)),
+              endMs: Math.max(0, Math.round(w.endMs + shift)),
+            })),
           };
           prevEnd = newEnd;
         }
 
         setCaptions(updated);
-      } else if (draggingSeg.type === "left") {
-        // Trimming left edge:
-        // Clamped so it cannot overlap preceding segment's end
-        const prevSeg = targetIdx > 0 ? origCaptions[targetIdx - 1] : undefined;
-        const prevEnd = prevSeg ? prevSeg.endMs : 0;
-        const maxStart = origTarget.endMs - 150;
-        const newStart = Math.max(prevEnd, Math.min(maxStart, Math.round(origTarget.startMs + dMs)));
-
-        setCaptions(
-          origCaptions.map((c, i) =>
-            i === targetIdx ? { ...c, startMs: newStart } : c
-          )
-        );
-      } else if (draggingSeg.type === "move") {
-        // Moving segment along timeline:
-        // Clamped between preceding segment's end and succeeding segment's start
-        const prevSeg = targetIdx > 0 ? origCaptions[targetIdx - 1] : undefined;
-        const nextSeg = targetIdx < origCaptions.length - 1 ? origCaptions[targetIdx + 1] : undefined;
-        const prevEnd = prevSeg ? prevSeg.endMs : 0;
-        const nextStart = nextSeg ? nextSeg.startMs : durationMs;
-        const maxStart = Math.max(prevEnd, nextStart - draggingSeg.origDuration);
-        const newStart = Math.max(prevEnd, Math.min(maxStart, Math.round(origTarget.startMs + dMs)));
-        const newEnd = newStart + draggingSeg.origDuration;
-
-        setCaptions(
-          origCaptions.map((c, i) =>
-            i === targetIdx ? { ...c, startMs: newStart, endMs: newEnd } : c
-          )
-        );
       }
     };
 
@@ -320,7 +499,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       window.removeEventListener("mousemove", handleMove);
       window.removeEventListener("mouseup", handleUp);
     };
-  }, [draggingSeg, pxPerMs, durationMs, setCaptions]);
+  }, [draggingSeg, pxPerMs, durationMs, setCaptions, onHistoryCommit]);
 
   // Scrubbing playhead on ruler
   const handleRulerMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -394,10 +573,10 @@ export const Timeline: React.FC<TimelineProps> = ({
 
   return (
     <div className="flex flex-col bg-card border-t border-border select-none text-foreground font-sans z-20 h-[175px] flex-shrink-0 transition-colors">
-      {/* ── TOP CONTROL BAR (Simplified, matching inspiration) ───────────────── */}
+      {/* ── TOP CONTROL BAR ─────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between px-3 h-10 border-b border-border bg-muted/30 flex-shrink-0 text-xs">
-        {/* Left: Undo, Redo, Delete */}
-        <div className="flex items-center gap-1">
+        {/* Left: History, Selected Actions & Audio Sync */}
+        <div className="flex items-center gap-1.5 overflow-visible relative">
           <button
             onClick={onUndo}
             disabled={!canUndo}
@@ -427,13 +606,177 @@ export const Timeline: React.FC<TimelineProps> = ({
           {selectedCaptionId && (
             <button
               onClick={handleDelete}
-              className="flex items-center gap-1 px-2.5 py-1 ml-1 rounded text-xs font-medium text-destructive hover:bg-destructive/15 transition-colors"
+              className="flex items-center gap-1 px-2 py-1 ml-0.5 rounded text-xs font-medium text-destructive hover:bg-destructive/15 transition-colors"
               title="Delete selected subtitle (Del)"
             >
               <Trash2 className="w-3.5 h-3.5" />
               <span>Delete</span>
             </button>
           )}
+
+          {/* Micro-Nudge for Selected Subtitle */}
+          {selectedCaptionId && (
+            <div className="hidden md:flex items-center gap-1 ml-1 pl-2 border-l border-border/60">
+              <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">Nudge:</span>
+              <button
+                onClick={() => handleNudgeSelected(-100)}
+                className="px-1.5 py-0.5 rounded text-[11px] font-mono text-muted-foreground hover:text-foreground hover:bg-muted border border-border/50 transition-colors"
+                title="Nudge selected segment 100ms earlier"
+              >
+                -0.1s
+              </button>
+              <button
+                onClick={() => handleNudgeSelected(100)}
+                className="px-1.5 py-0.5 rounded text-[11px] font-mono text-muted-foreground hover:text-foreground hover:bg-muted border border-border/50 transition-colors"
+                title="Nudge selected segment 100ms later"
+              >
+                +0.1s
+              </button>
+            </div>
+          )}
+
+          {/* ── AUDIO & SUBTITLE TIMING SYNC TOOL ────────────────────────── */}
+          <div ref={syncMenuRef} className="relative flex items-center ml-1 pl-2 border-l border-border/60">
+            <button
+              onClick={() => setShowSyncMenu((prev) => !prev)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                showSyncMenu
+                  ? "bg-primary text-primary-foreground shadow-xs"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted/70"
+              }`}
+              title="Calibrate audio & subtitle sync (one-click shift for all subtitles)"
+            >
+              <Clock className="w-3.5 h-3.5 text-primary" />
+              <span>Audio Sync</span>
+              {syncOffsetMs !== 0 && (
+                <span className="px-1.5 py-0.2 text-[10px] font-mono rounded bg-primary/20 text-foreground font-bold">
+                  {syncOffsetMs > 0 ? `+${(syncOffsetMs / 1000).toFixed(1)}s` : `${(syncOffsetMs / 1000).toFixed(1)}s`}
+                </span>
+              )}
+            </button>
+
+            {/* Quick 1-click global nudge buttons on the bar */}
+            <div className="hidden lg:flex items-center gap-0.5 ml-1">
+              <button
+                onClick={() => handleGlobalShift(-1000)}
+                className="px-1.5 py-0.5 rounded text-[10px] font-mono font-medium text-muted-foreground hover:text-foreground hover:bg-muted border border-border/40 transition-colors"
+                title="Shift ALL subtitles 1 second earlier (-1.0s)"
+              >
+                -1s
+              </button>
+              <button
+                onClick={() => handleGlobalShift(-500)}
+                className="px-1.5 py-0.5 rounded text-[10px] font-mono font-medium text-muted-foreground hover:text-foreground hover:bg-muted border border-border/40 transition-colors"
+                title="Shift ALL subtitles 0.5s earlier (-0.5s)"
+              >
+                -0.5s
+              </button>
+              <button
+                onClick={() => handleGlobalShift(500)}
+                className="px-1.5 py-0.5 rounded text-[10px] font-mono font-medium text-muted-foreground hover:text-foreground hover:bg-muted border border-border/40 transition-colors"
+                title="Shift ALL subtitles 0.5s later (+0.5s)"
+              >
+                +0.5s
+              </button>
+              <button
+                onClick={() => handleGlobalShift(1000)}
+                className="px-1.5 py-0.5 rounded text-[10px] font-mono font-medium text-muted-foreground hover:text-foreground hover:bg-muted border border-border/40 transition-colors"
+                title="Shift ALL subtitles 1 second later (+1.0s)"
+              >
+                +1s
+              </button>
+            </div>
+
+            {/* Audio Sync Popover Menu */}
+            {showSyncMenu && (
+              <div className="absolute top-full left-0 mt-1.5 w-84 p-3 bg-card text-card-foreground border border-border rounded-lg shadow-xl z-50 animate-in fade-in slide-in-from-top-1">
+                <div className="flex items-center justify-between pb-2 mb-2 border-b border-border/60">
+                  <div className="flex items-center gap-1.5 font-semibold text-xs">
+                    <SlidersHorizontal className="w-3.5 h-3.5 text-primary" />
+                    <span>Calibrate Subtitle Timing</span>
+                  </div>
+                  <button
+                    onClick={() => setShowSyncMenu(false)}
+                    className="text-muted-foreground hover:text-foreground text-xs p-1"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <p className="text-[11px] text-muted-foreground mb-2.5 leading-relaxed">
+                  Video containers often have audio delay (e.g. 2 sec lag on screen recordings). Shift all subtitles together to sync with audio:
+                </p>
+
+                <div className="space-y-1 mb-3">
+                  <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                    Quick Calibrate (Shift All)
+                  </span>
+                  <div className="grid grid-cols-4 gap-1.5 pt-1">
+                    {[-2.0, -1.0, -0.5, -0.2, 0.2, 0.5, 1.0, 2.0].map((sec) => (
+                      <button
+                        key={sec}
+                        onClick={() => handleGlobalShift(sec * 1000)}
+                        className={`py-1 text-xs font-mono font-semibold rounded border transition-colors ${
+                          sec < 0
+                            ? "bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 border-amber-500/30"
+                            : "bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 border-blue-500/30"
+                        }`}
+                        title={`Shift all subtitles by ${sec > 0 ? `+${sec}` : sec}s`}
+                      >
+                        {sec > 0 ? `+${sec}s` : `${sec}s`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-border/50">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                      Fine Tuning:
+                    </span>
+                    <span className="font-mono text-xs font-bold text-foreground">
+                      {syncOffsetMs > 0 ? `+${(syncOffsetMs / 1000).toFixed(2)}s` : `${(syncOffsetMs / 1000).toFixed(2)}s`}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => handleGlobalShift(-100)}
+                      className="flex-1 py-1 text-xs rounded bg-muted hover:bg-muted/80 text-foreground font-mono"
+                      title="Shift -100ms"
+                    >
+                      -0.1s
+                    </button>
+                    <button
+                      onClick={() => handleGlobalShift(-50)}
+                      className="flex-1 py-1 text-xs rounded bg-muted hover:bg-muted/80 text-foreground font-mono"
+                      title="Shift -50ms"
+                    >
+                      -0.05s
+                    </button>
+                    <button
+                      onClick={() => handleGlobalShift(50)}
+                      className="flex-1 py-1 text-xs rounded bg-muted hover:bg-muted/80 text-foreground font-mono"
+                      title="Shift +50ms"
+                    >
+                      +0.05s
+                    </button>
+                    <button
+                      onClick={() => handleGlobalShift(100)}
+                      className="flex-1 py-1 text-xs rounded bg-muted hover:bg-muted/80 text-foreground font-mono"
+                      title="Shift +100ms"
+                    >
+                      +0.1s
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-2.5 pt-2 border-t border-border/50 flex items-center justify-between text-[10px] text-muted-foreground">
+                  <span>Space: Preview Playback</span>
+                  <span>Ctrl+Z: Undo</span>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Center: Skip back, Play/Pause, Skip forward, Timecode */}
@@ -555,22 +898,27 @@ export const Timeline: React.FC<TimelineProps> = ({
             })}
           </div>
 
-          {/* 2. Track 1: Subtitle Segments (Purple rounded clips) */}
+          {/* 2. Track 1: Subtitle Segments (Purple rounded clips with tactile drag & trim) */}
           <div className="h-9 relative my-1 flex items-center flex-shrink-0">
             {captions.map((seg, idx) => {
-              const segId = seg.id || `seg-${idx}`;
+              const segId = seg.id || `seg-${idx}-${seg.startMs}`;
               const isSelected = selectedCaptionId === segId || (Boolean(seg.id) && selectedCaptionId === seg.id);
               const leftPx = seg.startMs * pxPerMs;
               const rawWidth = (seg.endMs - seg.startMs) * pxPerMs;
-              const clipWidth = Math.max(14, rawWidth - 2);
+              const clipWidth = Math.max(16, rawWidth - 2);
+              const isDraggingThis = draggingSeg?.id === segId;
 
               return (
                 <div
                   key={segId}
-                  className={`group absolute top-0.5 bottom-0.5 rounded-[5px] overflow-hidden cursor-pointer select-none transition-all flex items-center ${
+                  className={`group absolute top-0.5 bottom-0.5 rounded-[5px] select-none transition-[background-color,border-color,box-shadow] flex items-center ${
+                    isDraggingThis
+                      ? "cursor-grabbing ring-2 ring-white/90 brightness-110 shadow-lg z-30"
+                      : "cursor-grab"
+                  } ${
                     isSelected
                       ? "bg-[#8B5CF6] ring-2 ring-primary border border-white/80 shadow-md brightness-105 z-20"
-                      : "bg-[#7C3AED]/90 hover:bg-[#8B5CF6] border border-purple-400/20 hover:brightness-105 z-10"
+                      : "bg-[#7C3AED]/90 hover:bg-[#8B5CF6] border border-purple-400/25 hover:brightness-105 z-10"
                   }`}
                   style={{
                     left: `${leftPx}px`,
@@ -586,40 +934,54 @@ export const Timeline: React.FC<TimelineProps> = ({
                     onSelectCaption(segId);
                     seekToMs(seg.startMs);
                     if (e.button === 0) {
-                      initialCaptionsRef.current = [...captions].sort((a, b) => a.startMs - b.startMs);
+                      // Normalize captions so each has guaranteed stable ID
+                      const snapshot = captions.map((c, i) => ({
+                        ...c,
+                        id: c.id || `seg-${i}-${c.startMs}`,
+                      }));
+                      initialCaptionsRef.current = snapshot;
                       setDraggingSeg({
                         id: segId,
+                        targetIdx: idx,
                         type: "move",
                         startX: e.clientX,
                         startVal: seg.startMs,
-                        origDuration: seg.endMs - seg.startMs,
+                        origDuration: Math.max(150, seg.endMs - seg.startMs),
                       });
                     }
                   }}
-                  title={`[#${idx + 1}] ${seg.text} (${((seg.endMs - seg.startMs) / 1000).toFixed(1)}s)`}
+                  title={`[#${idx + 1}] ${seg.text} (${((seg.endMs - seg.startMs) / 1000).toFixed(1)}s) — Drag to move`}
                 >
                   {/* Left trim handle */}
                   {isSelected && (
                     <div
                       onMouseDown={(e) => {
                         e.stopPropagation();
-                        initialCaptionsRef.current = [...captions].sort((a, b) => a.startMs - b.startMs);
+                        const snapshot = captions.map((c, i) => ({
+                          ...c,
+                          id: c.id || `seg-${i}-${c.startMs}`,
+                        }));
+                        initialCaptionsRef.current = snapshot;
                         setDraggingSeg({
                           id: segId,
+                          targetIdx: idx,
                           type: "left",
                           startX: e.clientX,
                           startVal: seg.startMs,
-                          origDuration: seg.endMs - seg.startMs,
+                          origDuration: Math.max(150, seg.endMs - seg.startMs),
                         });
                       }}
-                      className="absolute left-0 top-0 bottom-0 w-1.5 bg-white rounded-l cursor-col-resize z-30 flex items-center justify-center hover:w-2 transition-all shadow-sm"
-                      title="Trim start"
-                    />
+                      className="absolute left-0 top-0 bottom-0 w-2 bg-white/95 rounded-l cursor-col-resize z-30 flex items-center justify-center hover:w-2.5 transition-all shadow-sm hover:bg-white"
+                      title="Drag to trim start time"
+                    >
+                      <div className="w-[1.5px] h-3 bg-purple-700/60 rounded" />
+                    </div>
                   )}
 
-                  {/* Subtitle text preview inside purple pill */}
-                  <div className="w-full px-2 overflow-hidden flex items-center">
-                    <span className="text-[11px] font-medium text-white truncate drop-shadow-sm">
+                  {/* Grip Icon + Subtitle text preview inside purple pill */}
+                  <div className="w-full px-2 pl-2.5 overflow-hidden flex items-center gap-1">
+                    <GripVertical className="w-3 h-3 text-white/50 group-hover:text-white/80 pointer-events-none flex-shrink-0" />
+                    <span className="text-[11px] font-medium text-white truncate drop-shadow-sm flex-1">
                       {seg.text}
                     </span>
                   </div>
@@ -629,18 +991,25 @@ export const Timeline: React.FC<TimelineProps> = ({
                     <div
                       onMouseDown={(e) => {
                         e.stopPropagation();
-                        initialCaptionsRef.current = [...captions].sort((a, b) => a.startMs - b.startMs);
+                        const snapshot = captions.map((c, i) => ({
+                          ...c,
+                          id: c.id || `seg-${i}-${c.startMs}`,
+                        }));
+                        initialCaptionsRef.current = snapshot;
                         setDraggingSeg({
                           id: segId,
+                          targetIdx: idx,
                           type: "right",
                           startX: e.clientX,
                           startVal: seg.endMs,
-                          origDuration: seg.endMs - seg.startMs,
+                          origDuration: Math.max(150, seg.endMs - seg.startMs),
                         });
                       }}
-                      className="absolute right-0 top-0 bottom-0 w-1.5 bg-white rounded-r cursor-col-resize z-30 flex items-center justify-center hover:w-2 transition-all shadow-sm"
-                      title="Trim end (ripple)"
-                    />
+                      className="absolute right-0 top-0 bottom-0 w-2 bg-white/95 rounded-r cursor-col-resize z-30 flex items-center justify-center hover:w-2.5 transition-all shadow-sm hover:bg-white"
+                      title="Drag to trim end time"
+                    >
+                      <div className="w-[1.5px] h-3 bg-purple-700/60 rounded" />
+                    </div>
                   )}
                 </div>
               );
