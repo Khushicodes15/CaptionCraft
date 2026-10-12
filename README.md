@@ -1,63 +1,123 @@
 # CaptionCraft
-**AI-powered video captioning with dynamic styles and person-aware text effects.**
 
-Caption Studio is a video caption editor designed to make subtitles more engaging and customizable. It combines speech transcription, word-level timing, dynamic caption styling, and an interactive editing experience.
+> AI-powered video caption editor featuring dynamic typography styles, word-level forced alignment, interactive canvas editing, and person-aware 3D depth occlusion.
+
+CaptionCraft (Caption Studio) is a full-stack video captioning and editing studio. It combines AI-driven speech transcription, word-level forced alignment, customizable typography presets, and a real-time preview canvas with person-aware subject segmentation ("Behind Head" effect).
+
+---
 
 ## Features
 
-- **AI Transcription:** Generate subtitles from video audio, with support for English and Hindi/Hinglish workflows.
-- **Word-Level Timestamps:** Align individual words with speech for precise caption timing.
-- **Dynamic Caption Styles:** Apply expressive presets and customize typography, colors, and animations.
-- **Catchy-Word Editing:** Customize the words emphasized by dynamic caption styles.
-- **Interactive Caption Editor:** Move, resize, and edit captions directly in the video preview.
-- **Global and Segment Controls:** Apply default caption settings across a video while retaining individual segment overrides.
-- **Behind-Subject Captions:** Place captions behind segmented foreground subjects.
-- **Video Export:** Render captioned videos with their configured styles and timing.
+- **AI Transcription & Forced Alignment**: Generate subtitles from audio using Groq (Whisper) for English and Sarvam AI for Hindi/Hinglish, paired with word-level forced alignment for synchronized pacing.
+- **Dynamic Caption Presets**: Built-in library of customizable caption styles with fine-grained control over typography, font scaling, letter/word/line spacing, and entrance animations.
+- **Catchy-Word Emphasis**: Automatic and manual keyword highlighting with per-word colors, background pills, and dynamic font treatments.
+- **Interactive Canvas Editing**: Move and resize caption boxes directly within the preview viewport with multi-handle bounding boxes and live snap guides.
+- **Global & Segment-Level Positioning**: Apply global subtitle positions across all segments while allowing individual segments to carry independent position and style overrides.
+- **"Behind Head" 3D Depth Occlusion**: Client-side person segmentation using Google MediaPipe (`selfie_multiclass_256x256.tflite`), seamlessly rendering text behind the subject's head, hair, shoulders, and torso during playback, editing, and export.
+- **Timeline Editor**: Synchronized multi-segment timeline with playback scrubber, segment selection, trimming, splitting, and inline subtitle correction.
+- **MP4 Export**: Server/client video rendering powered by Remotion, burning in styled captions, animations, and depth masks into a downloadable MP4.
+
+---
 
 ## Tech Stack
 
-- React and TypeScript
-- Tailwind CSS
-- Python-based processing components
-- Groq and Sarvam transcription integrations
-- MediaPipe-based segmentation
-- Remotion-based video rendering
+- **Framework**: [TanStack Start](https://tanstack.com/start) + [Vite](https://vitejs.dev/)
+- **UI & Styling**: React 19, TypeScript, Tailwind CSS, Radix UI primitives, Lucide React
+- **Video Engine**: [Remotion](https://www.remotion.dev/) (`@remotion/player`, `@remotion/renderer`, `@remotion/captions`)
+- **Computer Vision**: [Google MediaPipe Tasks Vision](https://developers.google.com/mediapipe) (WASM + TFLite multiclass segmentation)
+- **Transcription APIs**: Groq Cloud (Whisper Large), Sarvam AI (Saarika v2.5 / Saaras)
+- **Alignment Sidecar**: Python (`stable-ts`, Whisper, PyTorch)
+- **Backend & Persistence**: Supabase (Postgres, Storage, Auth), Drizzle ORM
 
-*The exact dependencies, supported models, and environment requirements should be confirmed against the current source code.*
+---
 
 ## Getting Started
 
 ### Prerequisites
 
-Install the required Node.js and Python versions, along with any system dependencies specified by the project.
+- **Node.js**: v18.18+ or v20+
+- **npm** or **bun**
+- **Python**: 3.10+ (required for word-level alignment script `stable-ts`)
+- **FFmpeg**: installed and available in your system `PATH` (for audio extraction and video rendering)
 
 ### Installation
 
-```bash
-git clone <YOUR_REPOSITORY_URL>
-cd caption-studio
-npm install
-```
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/Khushicodes15/CaptionCraft.git
+   cd CaptionCraft
+   ```
 
-Configure the environment variables using the project's environment-variable example file, if provided.
+2. **Install JavaScript dependencies**:
+   ```bash
+   npm install
+   ```
 
-Start the development server using the command defined in `package.json`, commonly:
+3. **Install Python alignment dependencies** (optional, for local alignment):
+   ```bash
+   pip install stable-ts openai-whisper torch
+   ```
 
-```bash
-npm run dev
-```
+4. **Configure Environment Variables**:
+   Copy the example environment file and fill in your API credentials:
+   ```bash
+   cp .env.example .env
+   ```
 
-Refer to the project configuration for additional frontend, backend, transcription, and export setup instructions.
+5. **Start the Development Server**:
+   ```bash
+   npm run dev
+   ```
+   Open [http://localhost:3000](http://localhost:3000) in your browser.
+
+---
 
 ## Configuration
 
-API keys and other secrets should be stored in local environment variables. Never commit API keys, credentials, personal media, or local environment files.
+Set the following keys in your `.env` file:
 
-## Project Status
+```ini
+# Supabase
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_PUBLISHABLE_KEY=your-supabase-anon-key
+SUPABASE_PROJECT_ID=your-project-id
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=your-supabase-anon-key
+VITE_SUPABASE_PROJECT_ID=your-project-id
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 
-Caption Studio is under active development. Features and setup requirements may evolve as the editor improves.
+# Speech-to-Text APIs
+GROQ_API_KEY=gsk_your_groq_api_key
+SARVAM_API_KEY=your_sarvam_api_key
+```
+
+---
+
+## Project Structure
+
+```
+├── drizzle/              # Database schema and SQL migrations
+├── public/
+│   ├── fonts/            # Bundled web fonts for Remotion rendering
+│   └── mediapipe/        # MediaPipe WASM binaries and TFLite model
+├── src/
+│   ├── components/       # UI components (Timeline, theme provider, etc.)
+│   ├── integrations/     # Supabase and Lovable client adapters
+│   ├── lib/              # Audio extraction, alignment, and transcription helpers
+│   ├── modules/
+│   │   ├── remotion/     # Remotion composition, overlay, and player components
+│   │   ├── segmentation/ # MediaPipe Behind Head segmentation pipeline
+│   │   ├── styles/       # Caption style presets, token definitions, and types
+│   │   ├── transcribe/   # Audio chunking and transcription handlers
+│   │   └── upload/       # Video upload and storage helpers
+│   ├── routes/           # TanStack Start file-based routing
+│   └── server.ts         # Server entrypoint
+├── package.json
+└── vite.config.ts
+```
+
+---
 
 ## License
 
-A license has not yet been selected. All rights remain with the respective copyright holders until a license is added.
-An AI-powered video caption editor with dynamic subtitle styles, Hinglish transcription, word-level timestamps, customizable caption positioning, and person-aware text occlusion.
+This project is licensed under the MIT License.
