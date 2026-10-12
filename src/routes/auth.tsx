@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { Eye, EyeOff, Mail, ArrowLeft, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,7 +26,9 @@ function AuthPage() {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [resending, setResending] = useState(false);
   const [sentConfirmation, setSentConfirmation] = useState(false);
 
   useEffect(() => {
@@ -61,17 +64,42 @@ function AuthPage() {
     }
   }
 
+  async function handleResendConfirmation() {
+    if (!email) return;
+    setResending(true);
+    try {
+      const { error } = await supabase.auth.resend({
+        type: "signup",
+        email,
+        options: {
+          emailRedirectTo: window.location.origin,
+        },
+      });
+      if (error) throw error;
+      toast.success("Confirmation email resent! Please check your inbox and spam folder.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to resend confirmation email.");
+    } finally {
+      setResending(false);
+    }
+  }
+
   async function handleGoogle() {
     setBusy(true);
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: `${window.location.origin}/app`,
-      },
-    });
-    if (error) {
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/app`,
+        },
+      });
+      if (error) throw error;
+    } catch (error: any) {
       setBusy(false);
-      toast.error("Google sign-in failed. Please try again.");
+      toast.error(
+        error?.message ||
+          "Google sign-in is not enabled in your Supabase project yet. Please use email & password or enable the Google provider in Supabase."
+      );
     }
   }
 
@@ -83,11 +111,45 @@ function AuthPage() {
         </Link>
 
         {sentConfirmation ? (
-          <div className="mt-6 space-y-3">
-            <h1 className="text-xl font-semibold">Check your email</h1>
-            <p className="text-sm text-muted-foreground">
-              We sent a confirmation link to {email}. Open it to finish creating your account.
-            </p>
+          <div className="mt-6 space-y-4">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <Mail className="h-6 w-6" />
+            </div>
+            <div className="space-y-1">
+              <h1 className="text-xl font-semibold">Check your email</h1>
+              <p className="text-sm text-muted-foreground">
+                We sent a confirmation link to <span className="font-medium text-foreground">{email}</span>.
+              </p>
+            </div>
+
+            <div className="rounded-lg border bg-muted/40 p-3 text-xs text-muted-foreground space-y-1">
+              <p>• Check your <strong>Spam</strong> or <strong>Junk</strong> folder.</p>
+              <p>• If you don't receive it, disable <strong>"Confirm email"</strong> in your Supabase dashboard (Authentication → Providers → Email) for instant login without emails.</p>
+            </div>
+
+            <div className="space-y-2 pt-2">
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={handleResendConfirmation}
+                disabled={resending}
+              >
+                <RefreshCw className={`mr-2 h-4 w-4 ${resending ? "animate-spin" : ""}`} />
+                {resending ? "Resending..." : "Resend confirmation email"}
+              </Button>
+
+              <Button
+                variant="ghost"
+                className="w-full text-sm text-muted-foreground"
+                onClick={() => {
+                  setSentConfirmation(false);
+                  setMode("signin");
+                }}
+              >
+                <ArrowLeft className="mr-2 h-4 w-4" />
+                Back to sign in
+              </Button>
+            </div>
           </div>
         ) : (
           <>
@@ -109,14 +171,26 @@ function AuthPage() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  autoComplete={mode === "signin" ? "current-password" : "new-password"}
-                />
+                <div className="relative">
+                  <Input
+                    id="password"
+                    type={showPassword ? "text" : "password"}
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    autoComplete={mode === "signin" ? "current-password" : "new-password"}
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors focus:outline-none"
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    tabIndex={-1}
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
               </div>
               <Button type="submit" className="w-full" disabled={busy}>
                 {mode === "signin" ? "Sign in" : "Sign up"}
