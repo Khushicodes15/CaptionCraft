@@ -1088,7 +1088,47 @@ function Editor() {
               duration_sec: project.data?.duration_sec,
             },
           });
-        if (data.success) {
+        if (data.success && data.pending) {
+          toast.loading("Rendering in the cloud (16 GB runner)... You can close this page or wait here.", { id: "mp4-render" });
+          const pollStart = Date.now();
+          const pollInterval = setInterval(async () => {
+            try {
+              const { data: updatedProj } = await supabase
+                .from("projects")
+                .select("status")
+                .eq("id", id)
+                .single();
+
+              if (updatedProj?.status?.startsWith("Ready:")) {
+                clearInterval(pollInterval);
+                const exportStoragePath = updatedProj.status.replace("Ready:", "");
+                const exportUrl = await signedVideoUrl(exportStoragePath);
+                toast.success("Cloud render complete!", { id: "mp4-render" });
+                const safeTitle = (title || "captioncraft").replace(/[^a-zA-Z0-9_-]/g, "_");
+                const a = document.createElement("a");
+                a.href = exportUrl;
+                a.download = `${safeTitle}-${Date.now()}.mp4`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setIsExportingMP4(false);
+              } else if (updatedProj?.status?.startsWith("Error:")) {
+                clearInterval(pollInterval);
+                toast.error("Cloud render failed: " + updatedProj.status.replace("Error:", ""), { id: "mp4-render" });
+                setIsExportingMP4(false);
+              } else if (Date.now() - pollStart > 25 * 60 * 1000) {
+                clearInterval(pollInterval);
+                toast.info("Render is processing in the cloud. It will be saved to your project.", { id: "mp4-render" });
+                setIsExportingMP4(false);
+              }
+            } catch (pollErr) {
+              console.warn("Cloud poll check exception:", pollErr);
+            }
+          }, 6000);
+          return;
+        }
+
+        if (data.success && data.url) {
           toast.success("Export complete!", { id: "mp4-render" });
           const safeTitle = (title || "captioncraft").replace(/[^a-zA-Z0-9_-]/g, "_");
           const a = document.createElement("a");
@@ -1098,7 +1138,7 @@ function Editor() {
           a.click();
           document.body.removeChild(a);
         } else {
-          toast.error("Failed to render: " + data.error, { id: "mp4-render" });
+          toast.error("Failed to render: " + (data.error || "Unknown error"), { id: "mp4-render" });
         }
       } catch (err) {
         toast.error("Error connecting to render server.", { id: "mp4-render" });

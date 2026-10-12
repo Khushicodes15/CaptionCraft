@@ -39,6 +39,44 @@ export const renderMp4 = createServerFn({ method: "POST" })
         }
       }
 
+      // Check if GitHub Actions 16GB Cloud Render Worker is configured
+      const githubToken = process.env["GITHUB_DISPATCH_TOKEN"] || process.env["GITHUB_TOKEN"];
+      const githubRepo = process.env["GITHUB_REPO"] || "Khushicodes15/CaptionCraft";
+
+      if (githubToken && data.projectId && data.projectId !== "local") {
+        console.log(`[renderMp4] Dispatching 16GB Cloud Render to GitHub Actions (${githubRepo})...`);
+        try {
+          const dispatchRes = await fetch(`https://api.github.com/repos/${githubRepo}/dispatches`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${githubToken}`,
+              Accept: "application/vnd.github.v3+json",
+              "User-Agent": "CaptionCraft-Cloud",
+            },
+            body: JSON.stringify({
+              event_type: "render-video",
+              client_payload: {
+                projectId: data.projectId,
+              },
+            }),
+          });
+
+          if (dispatchRes.ok || dispatchRes.status === 204) {
+            console.log("[renderMp4] Successfully dispatched to GitHub Actions Cloud Worker!");
+            return {
+              success: true,
+              pending: true,
+              message: "Render queued on GitHub Actions (16 GB cloud runner).",
+            };
+          } else {
+            const errText = await dispatchRes.text();
+            console.warn("[renderMp4] GitHub Actions dispatch returned non-OK:", dispatchRes.status, errText);
+          }
+        } catch (dispatchErr) {
+          console.warn("[renderMp4] Error dispatching to GitHub Actions:", dispatchErr);
+        }
+      }
+
       const uniqueId = Date.now();
       const tempWorkDir = path.join(tmpdir(), "captioncraft-renders");
       if (!fs.existsSync(tempWorkDir)) {

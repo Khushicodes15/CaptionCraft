@@ -1,0 +1,42 @@
+name: Cloud Video Render Worker
+
+on:
+  repository_dispatch:
+    types: [render-video]
+  workflow_dispatch:
+    inputs:
+      projectId:
+        description: 'Project ID to render'
+        required: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Chromium & FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg chromium-browser
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Cloud Video Render
+        env:
+          PROJECT_ID: ${{ github.event.client_payload.projectId || github.event.inputs.projectId }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium-browser
+          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
+        run: node scripts/render-cli.mjs
