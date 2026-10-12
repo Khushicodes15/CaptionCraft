@@ -15,7 +15,22 @@ import path from "path";
 import type { Caption } from "@/modules/styles/types";
 import { hasDevanagari, transliterateToRoman } from "@/modules/transcribe/hinglish";
 
-const PYTHON_EXE = "C:\\Users\\User\\AppData\\Local\\Programs\\Python\\Python311\\python.exe";
+function resolvePythonExecutable(): string {
+  const customBin = process.env["PYTHON_BIN"];
+  if (customBin) {
+    return customBin;
+  }
+  if (process.platform === "win32") {
+    const defaultWinPython = "C:\\Users\\User\\AppData\\Local\\Programs\\Python\\Python311\\python.exe";
+    if (existsSync(defaultWinPython)) {
+      return defaultWinPython;
+    }
+    return "python";
+  }
+  return "python3";
+}
+
+const PYTHON_EXE = resolvePythonExecutable();
 const ALIGN_SCRIPT = path.join(process.cwd(), "src", "lib", "align_whisper.py");
 
 export type AlignedWord = { word: string; start_ms: number; end_ms: number };

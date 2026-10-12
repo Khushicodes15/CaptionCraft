@@ -3,40 +3,75 @@ import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition, getVideoMetadata } from "@remotion/renderer";
 import path from "path";
 import fs from "fs";
+import { tmpdir } from "os";
 import { Readable } from "stream";
 import { finished } from "stream/promises";
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 
 export const renderMp4 = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
   .validator((data: any) => data)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
     let localVideoPath = "";
-    try {
-      const uniqueId = Date.now();
-      const tempVideoFilename = `temp-${uniqueId}.mp4`;
-      localVideoPath = path.resolve(process.cwd(), "public", tempVideoFilename);
+    let outputLocation = "";
 
-      console.log("Downloading source video to local disk to prevent FFmpeg remote streaming corruption...");
+    try {
+      const userId = context.userId;
+      if (!userId) {
+        throw new Error("Unauthorized: Invalid user session.");
+      }
+
+      // Optional project ownership verification when a projectId is provided
+      if (data.projectId && data.projectId !== "local") {
+        try {
+          const { data: proj, error: projErr } = await context.supabase
+            .from("projects")
+            .select("id")
+            .eq("id", data.projectId)
+            .eq("user_id", userId)
+            .maybeSingle();
+
+          if (projErr || !proj) {
+            console.warn(`[renderMp4] Project verification warning for project ${data.projectId}:`, projErr?.message);
+          }
+        } catch (e) {
+          console.warn("[renderMp4] Non-blocking project ownership check exception:", e);
+        }
+      }
+
+      const uniqueId = Date.now();
+      const tempWorkDir = path.join(tmpdir(), "captioncraft-renders");
+      if (!fs.existsSync(tempWorkDir)) {
+        fs.mkdirSync(tempWorkDir, { recursive: true });
+      }
+
+      const tempVideoFilename = `source-${uniqueId}.mp4`;
+      localVideoPath = path.join(tempWorkDir, tempVideoFilename);
+
+      console.log("[renderMp4] Downloading source video to local temp directory to prevent FFmpeg streaming stalls...");
       const response = await fetch(data.videoUrl);
-      if (!response.ok || !response.body) throw new Error("Failed to fetch video for rendering");
-      
+      if (!response.ok || !response.body) {
+        throw new Error("Failed to fetch video for rendering.");
+      }
+
       const fileStream = fs.createWriteStream(localVideoPath);
       // @ts-ignore - node fetch streams are compatible enough
       await finished(Readable.fromWeb(response.body).pipe(fileStream));
-      console.log("Video downloaded locally.");
+      console.log("[renderMp4] Video downloaded to temp storage:", localVideoPath);
 
       // Inspect source video for exact duration, frame rate, and dimensions
       let videoMeta: any = null;
       try {
-        console.log("Extracting video metadata...");
+        console.log("[renderMp4] Extracting video metadata...");
         videoMeta = await getVideoMetadata(localVideoPath);
-        console.log("Extracted video metadata:", {
+        console.log("[renderMp4] Extracted video metadata:", {
           durationInSeconds: videoMeta?.durationInSeconds,
           fps: videoMeta?.fps,
           width: videoMeta?.width,
           height: videoMeta?.height,
         });
       } catch (metaErr) {
-        console.warn("Could not extract metadata via getVideoMetadata:", metaErr);
+        console.warn("[renderMp4] Could not extract metadata via getVideoMetadata:", metaErr);
       }
 
       // Prioritize actual source video metadata extracted from the file on disk
@@ -47,11 +82,6 @@ export const renderMp4 = createServerFn({ method: "POST" })
       const videoWidth = Math.floor(rawWidth / 2) * 2;
       const videoHeight = Math.floor(rawHeight / 2) * 2;
 
-      // Priority for duration:
-      // 1. Source video metadata duration (actual full video duration)
-      // 2. data.duration_sec passed from project/client
-      // 3. Caption timestamps endMs
-      // 4. Default fallback
       const durationSec =
         videoMeta?.durationInSeconds && videoMeta.durationInSeconds > 0
           ? videoMeta.durationInSeconds
@@ -71,15 +101,15 @@ export const renderMp4 = createServerFn({ method: "POST" })
         durationInFrames = 300;
       }
 
-      console.log(`Resolved export duration: ${durationSec ?? (durationInFrames / videoFps)}s (${durationInFrames} frames @ ${videoFps}fps), resolution: ${videoWidth}x${videoHeight}`);
+      console.log(`[renderMp4] Resolved export duration: ${durationSec ?? (durationInFrames / videoFps)}s (${durationInFrames} frames @ ${videoFps}fps), resolution: ${videoWidth}x${videoHeight}`);
 
-      console.log("Bundling Remotion project...");
+      console.log("[renderMp4] Bundling Remotion project...");
       const bundleLocation = await bundle({
         entryPoint: path.resolve(process.cwd(), "src/remotion/index.ts"),
       });
 
       const inputProps = {
-        videoSrc: tempVideoFilename,
+        videoSrc: localVideoPath,
         captions: data.captions,
         emphasis: data.emphasis,
         style: data.style,
@@ -94,29 +124,28 @@ export const renderMp4 = createServerFn({ method: "POST" })
         height: videoHeight,
       };
 
-      console.log("Selecting composition...");
+      console.log("[renderMp4] Selecting composition...");
       const composition = await selectComposition({
         serveUrl: bundleLocation,
         id: "CaptionedVideo",
         inputProps,
       });
 
-      // Explicitly override composition properties to ensure full video duration and proper resolution
       composition.durationInFrames = durationInFrames;
       composition.fps = videoFps;
       composition.width = videoWidth;
       composition.height = videoHeight;
 
-      const outputFilename = `render-${uniqueId}.mp4`;
-      const outputLocation = path.resolve(process.cwd(), "public", outputFilename);
+      const outputFilename = `export-${uniqueId}.mp4`;
+      outputLocation = path.join(tempWorkDir, outputFilename);
 
-      console.log("Rendering media with high-quality settings (lossless PNG frames, CRF 16, x264Preset slow)...");
+      console.log("[renderMp4] Rendering media with Remotion (CRF 16, x264Preset medium, lossless PNG frames)...");
       await renderMedia({
         composition,
         serveUrl: bundleLocation,
         codec: "h264",
         crf: 16,
-        x264Preset: "slow",
+        x264Preset: "medium",
         pixelFormat: "yuv420p",
         imageFormat: "png",
         audioCodec: "aac",
@@ -124,16 +153,46 @@ export const renderMp4 = createServerFn({ method: "POST" })
         scale: 1,
         outputLocation,
         inputProps,
+        chromiumOptions: {
+          disableWebSecurity: true,
+        },
       });
 
-      const base64 = fs.readFileSync(outputLocation).toString("base64");
-      const dataUrl = `data:video/mp4;base64,${base64}`;
-      fs.unlinkSync(outputLocation);
-      if (fs.existsSync(localVideoPath)) fs.unlinkSync(localVideoPath);
-      return { success: true, url: dataUrl };
+      console.log("[renderMp4] Render complete. Uploading MP4 to private Supabase Storage...");
+      const fileBuffer = fs.readFileSync(outputLocation);
+      const storagePath = `${userId}/exports/export-${uniqueId}.mp4`;
+
+      const { error: uploadError } = await context.supabase.storage
+        .from("videos")
+        .upload(storagePath, fileBuffer, {
+          contentType: "video/mp4",
+          upsert: true,
+        });
+
+      if (uploadError) {
+        throw new Error(`Failed to upload rendered video to Supabase Storage: ${uploadError.message}`);
+      }
+
+      console.log("[renderMp4] Creating 24-hour signed download URL...");
+      const { data: signData, error: signError } = await context.supabase.storage
+        .from("videos")
+        .createSignedUrl(storagePath, 60 * 60 * 24);
+
+      if (signError || !signData?.signedUrl) {
+        throw new Error(`Failed to generate signed download URL: ${signError?.message || "Unknown error"}`);
+      }
+
+      return { success: true, url: signData.signedUrl };
     } catch (error: any) {
-      console.error(error);
-      if (localVideoPath && fs.existsSync(localVideoPath)) fs.unlinkSync(localVideoPath);
+      console.error("[renderMp4] Export failed:", error);
       return { success: false, error: error.message };
+    } finally {
+      // Clean up temporary files on disk unconditionally
+      if (localVideoPath && fs.existsSync(localVideoPath)) {
+        try { fs.unlinkSync(localVideoPath); } catch (e) { console.warn("[renderMp4] Could not remove temp source video:", e); }
+      }
+      if (outputLocation && fs.existsSync(outputLocation)) {
+        try { fs.unlinkSync(outputLocation); } catch (e) { console.warn("[renderMp4] Could not remove temp output video:", e); }
+      }
     }
   });

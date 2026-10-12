@@ -1074,6 +1074,7 @@ function Editor() {
         toast.loading("Rendering MP4... this may take a minute.", { id: "mp4-render" });
         const data = await renderMp4({
             data: {
+              projectId: id,
               videoUrl,
               captions,
               emphasis,
@@ -1089,16 +1090,13 @@ function Editor() {
           });
         if (data.success) {
           toast.success("Export complete!", { id: "mp4-render" });
-          if (data.url.startsWith("data:")) {
-            const a = document.createElement("a");
-            a.href = data.url;
-            a.download = `render-${Date.now()}.mp4`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-          } else {
-            window.location.href = data.url;
-          }
+          const safeTitle = (title || "captioncraft").replace(/[^a-zA-Z0-9_-]/g, "_");
+          const a = document.createElement("a");
+          a.href = data.url;
+          a.download = `${safeTitle}-${Date.now()}.mp4`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
         } else {
           toast.error("Failed to render: " + data.error, { id: "mp4-render" });
         }

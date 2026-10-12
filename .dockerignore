@@ -1,0 +1,13 @@
+node_modules
+.output
+.tanstack
+dist
+.git
+.github
+.env
+.env.local
+*.log
+scratch
+tmp
+public/render-*.mp4
+public/temp-*.mp4

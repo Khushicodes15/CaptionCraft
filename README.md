@@ -1,3 +1,13 @@
+---
+title: CaptionCraft
+emoji: 🎬
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # CaptionCraft
 
 > AI-powered video caption editor featuring dynamic typography styles, word-level forced alignment, interactive canvas editing, and person-aware 3D depth occlusion.
