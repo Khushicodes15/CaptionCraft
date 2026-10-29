@@ -160,10 +160,15 @@ function Dashboard() {
   }, [navigate, queryClient]);
 
   async function signOut() {
-    await queryClient.cancelQueries();
-    queryClient.clear();
-    await supabase.auth.signOut();
-    navigate({ to: "/auth", replace: true });
+    try {
+      await queryClient.cancelQueries();
+      queryClient.clear();
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.warn("Sign out error:", e);
+    } finally {
+      navigate({ to: "/auth", replace: true });
+    }
   }
 
   const totalMb = projects.data

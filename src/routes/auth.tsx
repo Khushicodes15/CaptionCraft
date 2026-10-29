@@ -21,6 +21,18 @@ export const Route = createFileRoute("/auth")({
   component: AuthPage,
 });
 
+function formatAuthError(error: unknown): string {
+  if (!error) return "An unexpected error occurred.";
+  const msg = error instanceof Error ? error.message : String(error);
+  if (
+    msg.toLowerCase().includes("failed to fetch") ||
+    (error instanceof TypeError && msg.includes("fetch"))
+  ) {
+    return "Unable to connect to the authentication server. The backend may be waking up or your internet connection was interrupted. Please wait a few seconds and try again.";
+  }
+  return msg;
+}
+
 function AuthPage() {
   const navigate = useNavigate();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
@@ -32,9 +44,38 @@ function AuthPage() {
   const [sentConfirmation, setSentConfirmation] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      if (data.user) navigate({ to: "/app", replace: true });
+    // 1. Check for error parameters in URL (from OAuth redirects)
+    if (typeof window !== "undefined") {
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      const searchParams = new URLSearchParams(window.location.search);
+      const errorMsg =
+        hashParams.get("error_description") ||
+        searchParams.get("error_description") ||
+        hashParams.get("error") ||
+        searchParams.get("error");
+
+      if (errorMsg) {
+        toast.error(decodeURIComponent(errorMsg.replace(/\+/g, " ")));
+        // Clean URL without triggering reload
+        window.history.replaceState(null, "", window.location.pathname);
+      }
+    }
+
+    // 2. Listen for auth changes (OAuth redirect completion, magic links, etc.)
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session?.user) {
+        navigate({ to: "/app", replace: true });
+      }
     });
+
+    // 3. Check existing session
+    supabase.auth.getUser().then(({ data }) => {
+      if (data?.user) navigate({ to: "/app", replace: true });
+    });
+
+    return () => {
+      authListener?.subscription?.unsubscribe();
+    };
   }, [navigate]);
 
   async function handleEmail(event: React.FormEvent) {
@@ -45,7 +86,7 @@ function AuthPage() {
         const { data, error } = await supabase.auth.signUp({
           email,
           password,
-          options: { emailRedirectTo: window.location.origin },
+          options: { emailRedirectTo: `${window.location.origin}/app` },
         });
         if (error) throw error;
         if (!data.session) {
@@ -58,7 +99,7 @@ function AuthPage() {
       }
       navigate({ to: "/app" });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not sign you in.");
+      toast.error(formatAuthError(error));
     } finally {
       setBusy(false);
     }
@@ -72,13 +113,13 @@ function AuthPage() {
         type: "signup",
         email,
         options: {
-          emailRedirectTo: window.location.origin,
+          emailRedirectTo: `${window.location.origin}/app`,
         },
       });
       if (error) throw error;
       toast.success("Confirmation email resent! Please check your inbox and spam folder.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to resend confirmation email.");
+      toast.error(formatAuthError(error));
     } finally {
       setResending(false);
     }
@@ -97,8 +138,10 @@ function AuthPage() {
     } catch (error: any) {
       setBusy(false);
       toast.error(
-        error?.message ||
-          "Google sign-in is not enabled in your Supabase project yet. Please use email & password or enable the Google provider in Supabase."
+        formatAuthError(
+          error?.message ||
+            "Google sign-in is not enabled in your Supabase project yet. Please use email & password or enable the Google provider in Supabase."
+        )
       );
     }
   }
